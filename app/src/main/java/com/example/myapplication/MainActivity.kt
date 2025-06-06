@@ -63,11 +63,14 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.example.myapplication.ui.theme.MyApplicationTheme
+import com.google.firebase.FirebaseApp
+import com.google.firebase.firestore.FirebaseFirestore
 import kotlin.collections.chunked
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        FirebaseApp.initializeApp(this)
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {
@@ -78,6 +81,8 @@ class MainActivity : ComponentActivity() {
 }
 
 class SchoolViewModel : ViewModel() {
+    private val db = FirebaseFirestore.getInstance()
+
     private val _schedule = MutableLiveData<List<DaySchedule>>()
     val schedule: LiveData<List<DaySchedule>> get() = _schedule
 
@@ -85,37 +90,82 @@ class SchoolViewModel : ViewModel() {
     val subjectsItems: LiveData<Map<String, List<String>>> get() = _subjectsItems
 
     init {
-        _schedule.value = listOf(
-            DaySchedule("Понедельник", listOf("Математика", "Русский язык", "География", "Физ. культура")),
-            DaySchedule("Вторник", listOf("Математика", "Русский язык", "География", "Физ. культура")),
-            DaySchedule("Среда", listOf("Математика", "Русский язык", "География", "Физ. культура")),
-            DaySchedule("Четверг", listOf("Математика", "Русский язык", "География", "Физ. культура")),
-            DaySchedule("Пятница", listOf("Математика", "Русский язык", "География", "Физ. культура")),
-            DaySchedule("Суббота", listOf("Математика", "Русский язык", "География", "Физ. культура", "Литература"))
-        )
-
-        _subjectsItems.value = mapOf(
-            "Математика" to listOf("Тетрадь", "Учебник", "Линейка"),
-            "Русский язык" to listOf("Тетрадь", "Учебник"),
-            "География" to listOf("Тетрадь", "Атлас", "Контурные карты"),
-            "Физ. культура" to listOf("Спортивная форма"),
-            "Литература" to listOf("Тетрадь", "Книга")
-        )
+        fetchSchedule()
+        fetchSubjects()
     }
 
-    fun updateDaySchedule(dayName: String, newSubjects: List<String>) {
-        val currentSchedule = _schedule.value?.toMutableList() ?: return
-        val dayIndex = currentSchedule.indexOfFirst { it.name == dayName }
-        if (dayIndex != -1) {
-            currentSchedule[dayIndex] = DaySchedule(dayName, newSubjects)
-            _schedule.value = currentSchedule
+    private fun fetchSchedule() {
+        db.collection("schedule").get().addOnSuccessListener { result ->
+            if (result.isEmpty) {
+                // Если база данных пуста — создать шаблон
+                val defaultDays = listOf(
+                    DaySchedule("Понедельник", emptyList()),
+                    DaySchedule("Вторник", emptyList()),
+                    DaySchedule("Среда", emptyList()),
+                    DaySchedule("Четверг", emptyList()),
+                    DaySchedule("Пятница", emptyList()),
+                    DaySchedule("Суббота", emptyList())
+                )
+
+                // Залить в Firestore
+                defaultDays.forEach { day ->
+                    db.collection("schedule").document(day.name).set(day)
+                }
+
+                // Установить в LiveData
+                _schedule.value = defaultDays
+            } else {
+                // Если данные есть — загрузить
+                val list = result.mapNotNull { docSnapshot ->
+                    docSnapshot.toObject(DaySchedule::class.java)
+                }
+
+                val orderedDays = list.sortedBy { day ->
+                    when (day.name) {
+                        "Понедельник" -> 1
+                        "Вторник" -> 2
+                        "Среда" -> 3
+                        "Четверг" -> 4
+                        "Пятница" -> 5
+                        "Суббота" -> 6
+                        else -> 7
+                    }
+                }
+
+                _schedule.value = orderedDays
+            }
         }
     }
 
+
+    private fun fetchSubjects() {
+        db.collection("subjects").get().addOnSuccessListener { result ->
+            val itemsMap = mutableMapOf<String, List<String>>()
+            for (doc in result) {
+                val subject = doc.id
+                val items = doc.get("items") as? List<String> ?: emptyList()
+                itemsMap[subject] = items
+            }
+            _subjectsItems.value = itemsMap
+        }
+    }
+
+    fun updateDaySchedule(dayName: String, newSubjects: List<String>) {
+        val newDay = DaySchedule(dayName, newSubjects)
+        db.collection("schedule").document(dayName).set(newDay)
+
+        val current = _schedule.value?.toMutableList() ?: mutableListOf()
+        val index = current.indexOfFirst { it.name == dayName }
+        if (index != -1) current[index] = newDay else current.add(newDay)
+        _schedule.value = current
+    }
+
     fun updateSubjectItems(subjectName: String, items: List<String>) {
-        val currentItems = _subjectsItems.value?.toMutableMap() ?: return
-        currentItems[subjectName] = items
-        _subjectsItems.value = currentItems
+        db.collection("subjects").document(subjectName).set(mapOf("items" to items))
+
+        val current = _subjectsItems.value?.toMutableMap() ?: mutableMapOf()
+        current[subjectName] = items
+        _subjectsItems.value = current
     }
 }
 
@@ -165,7 +215,11 @@ sealed class Routes(val route: String) {
 }
 
 
-data class DaySchedule(val name: String, val subjects: List<String>)
+data class DaySchedule(
+    val name: String = "",
+    val subjects: List<String> = emptyList()
+)
+
 
 
 @Composable
