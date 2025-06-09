@@ -66,22 +66,35 @@ import com.example.myapplication.ui.theme.MyApplicationTheme
 import com.google.firebase.FirebaseApp
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlin.collections.chunked
+import com.google.firebase.auth.FirebaseAuth
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         FirebaseApp.initializeApp(this)
-        enableEdgeToEdge()
-        setContent {
-            MyApplicationTheme {
-                SchoolApp()
+
+        FirebaseAuth.getInstance().signInAnonymously().addOnCompleteListener { task ->
+            if (task.isSuccessful) {
+                setContent {
+                    MyApplicationTheme {
+                        SchoolApp()
+                    }
+                }
+            } else {
+                // Обработка ошибки
+                throw RuntimeException("Firebase anonymous auth failed", task.exception)
             }
         }
     }
 }
 
 class SchoolViewModel : ViewModel() {
+    private val auth = FirebaseAuth.getInstance()
     private val db = FirebaseFirestore.getInstance()
+    private val userUid = auth.currentUser?.uid ?: "unknown" // для safety
+    private val userScheduleRef = db.collection("users").document(userUid).collection("schedule")
+    private val userSubjectsRef = db.collection("users").document(userUid).collection("subjects")
+
 
     private val _schedule = MutableLiveData<List<DaySchedule>>()
     val schedule: LiveData<List<DaySchedule>> get() = _schedule
@@ -95,9 +108,8 @@ class SchoolViewModel : ViewModel() {
     }
 
     private fun fetchSchedule() {
-        db.collection("schedule").get().addOnSuccessListener { result ->
+        userScheduleRef.get().addOnSuccessListener { result ->
             if (result.isEmpty) {
-                // Если база данных пуста — создать шаблон
                 val defaultDays = listOf(
                     DaySchedule("Понедельник", emptyList()),
                     DaySchedule("Вторник", emptyList()),
@@ -107,21 +119,15 @@ class SchoolViewModel : ViewModel() {
                     DaySchedule("Суббота", emptyList())
                 )
 
-                // Залить в Firestore
                 defaultDays.forEach { day ->
-                    db.collection("schedule").document(day.name).set(day)
+                    userScheduleRef.document(day.name).set(day)
                 }
 
-                // Установить в LiveData
                 _schedule.value = defaultDays
             } else {
-                // Если данные есть — загрузить
-                val list = result.mapNotNull { docSnapshot ->
-                    docSnapshot.toObject(DaySchedule::class.java)
-                }
-
-                val orderedDays = list.sortedBy { day ->
-                    when (day.name) {
+                val list = result.mapNotNull { it.toObject(DaySchedule::class.java) }
+                val ordered = list.sortedBy {
+                    when (it.name) {
                         "Понедельник" -> 1
                         "Вторник" -> 2
                         "Среда" -> 3
@@ -131,15 +137,14 @@ class SchoolViewModel : ViewModel() {
                         else -> 7
                     }
                 }
-
-                _schedule.value = orderedDays
+                _schedule.value = ordered
             }
         }
     }
 
 
     private fun fetchSubjects() {
-        db.collection("subjects").get().addOnSuccessListener { result ->
+        userSubjectsRef.get().addOnSuccessListener { result ->
             val itemsMap = mutableMapOf<String, List<String>>()
             for (doc in result) {
                 val subject = doc.id
@@ -152,7 +157,7 @@ class SchoolViewModel : ViewModel() {
 
     fun updateDaySchedule(dayName: String, newSubjects: List<String>) {
         val newDay = DaySchedule(dayName, newSubjects)
-        db.collection("schedule").document(dayName).set(newDay)
+        userScheduleRef.document(dayName).set(newDay)
 
         val current = _schedule.value?.toMutableList() ?: mutableListOf()
         val index = current.indexOfFirst { it.name == dayName }
@@ -161,7 +166,7 @@ class SchoolViewModel : ViewModel() {
     }
 
     fun updateSubjectItems(subjectName: String, items: List<String>) {
-        db.collection("subjects").document(subjectName).set(mapOf("items" to items))
+        userSubjectsRef.document(subjectName).set(mapOf("items" to items))
 
         val current = _subjectsItems.value?.toMutableMap() ?: mutableMapOf()
         current[subjectName] = items
